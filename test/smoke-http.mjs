@@ -4,7 +4,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const url = new URL(process.env.MCP_URL || 'http://localhost:8787/mcp');
-const transport = new StreamableHTTPClientTransport(url);
+const token = process.env.MCP_TOKEN;
+const transport = new StreamableHTTPClientTransport(url,
+  token ? { requestInit: { headers: { Authorization: `Bearer ${token}` } } } : undefined);
 const client = new Client({ name: 'remote-smoke', version: '1.0.0' });
 await client.connect(transport);
 

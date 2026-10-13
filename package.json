@@ -9,9 +9,12 @@
     "mcp:http": "node src/mcp/server.mjs --http",
     "backfill": "node src/capture/ingest.js backfill"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "pg": "^8.23.1",
     "zod": "^3.23.8"
   }
 }

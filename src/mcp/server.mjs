@@ -38,7 +38,7 @@ function createServer() {
       tags: z.array(z.string()).optional().describe('Optional topic tags, e.g. ["home","preference"].'),
       source: z.string().optional().describe('Which assistant/app is saving this (e.g. "muse","claude","chatgpt").'),
     },
-  }, async ({ text, tags, source }) => fmt(addFact({ text, tags, source: source || 'mcp' })));
+  }, async ({ text, tags, source }) => fmt(await addFact({ text, tags, source: source || 'mcp' })));
 
   server.registerTool('memory_search', {
     title: 'Search shared memory',
@@ -48,13 +48,13 @@ function createServer() {
       limit: z.number().int().positive().max(50).optional(),
       tag: z.string().optional().describe('Restrict to a tag.'),
     },
-  }, async ({ query, limit, tag }) => fmt(searchFacts(query, { limit: limit || 10, tag: tag || null })));
+  }, async ({ query, limit, tag }) => fmt(await searchFacts(query, { limit: limit || 10, tag: tag || null })));
 
   server.registerTool('memory_list', {
     title: 'List recent memory',
     description: 'List the most recently updated facts in the shared memory.',
     inputSchema: { limit: z.number().int().positive().max(200).optional() },
-  }, async ({ limit }) => fmt(listFacts({ limit: limit || 50 })));
+  }, async ({ limit }) => fmt(await listFacts({ limit: limit || 50 })));
 
   server.registerTool('memory_update', {
     title: 'Update a fact',
@@ -64,19 +64,19 @@ function createServer() {
       text: z.string().optional(),
       tags: z.array(z.string()).optional(),
     },
-  }, async ({ id, text, tags }) => fmt(updateFact(id, { text, tags })));
+  }, async ({ id, text, tags }) => fmt(await updateFact(id, { text, tags })));
 
   server.registerTool('memory_delete', {
     title: 'Delete a fact',
     description: 'Remove a fact from shared memory by id.',
     inputSchema: { id: z.string() },
-  }, async ({ id }) => fmt(deleteFact(id)));
+  }, async ({ id }) => fmt(await deleteFact(id)));
 
   server.registerTool('memory_stats', {
     title: 'Memory stats',
     description: 'How many facts are stored, and the tag breakdown.',
     inputSchema: {},
-  }, async () => fmt(stats()));
+  }, async () => fmt(await stats()));
 
   return server;
 }

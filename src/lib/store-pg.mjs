@@ -2,6 +2,7 @@
 // Lives in its own isolated table so it can safely share an existing database.
 import crypto from 'node:crypto';
 import pg from 'pg';
+import * as match from './match.mjs';
 
 const TABLE = 'shared_memory_facts';
 const conn = process.env.DATABASE_URL;
@@ -90,16 +91,16 @@ export async function deleteFact(id) {
 
 export async function searchFacts(query, { limit = 10, tag = null } = {}) {
   await init();
-  const terms = tokenize(query);
+  const q = match.terms(query);
   const { rows } = await pool.query(
     tag ? `SELECT * FROM ${TABLE} WHERE $1 = ANY(tags)` : `SELECT * FROM ${TABLE}`,
     tag ? [tag] : []);
   const scored = [];
   for (const r of rows) {
-    const ft = tokenize(r.text);
-    let score = 0; for (const t of terms) if (ft.has(t)) score++;
+    const base = match.scoreText(q, r.text);
+    if (base <= 0 && q.length) continue;
     const ts = Date.parse(r.updated_at) || 0;
-    if (score > 0 || !terms.size) scored.push({ score: score + (ts ? ts / 1e16 : 0), r });
+    scored.push({ score: base + (ts ? ts / 1e16 : 0), r });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, limit).map((s) => row2fact(s.r));

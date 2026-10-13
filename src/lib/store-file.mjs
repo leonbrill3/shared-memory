@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import * as match from './match.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -103,18 +104,17 @@ export function deleteFact(id) {
 }
 
 export function searchFacts(query, { limit = 10, tag = null } = {}) {
-  const terms = tokenize(query);
+  const q = match.terms(query);
   const facts = readAll();
   const scored = [];
   for (const f of facts) {
     if (tag && !(f.tags || []).includes(tag)) continue;
-    const ft = tokenize(f.text);
-    let score = 0;
-    for (const t of terms) if (ft.has(t)) score++;
+    const base = match.scoreText(q, f.text);
+    if (base <= 0 && q.length) continue;
     // light recency tiebreak
     const ts = Date.parse(f.updatedAt || f.createdAt || '') || 0;
-    if (score > 0 || !terms.size) {
-      scored.push({ score: score + (ts ? ts / 1e16 : 0), f });
+    {
+      scored.push({ score: base + (ts ? ts / 1e16 : 0), f });
     }
   }
   scored.sort((a, b) => b.score - a.score);

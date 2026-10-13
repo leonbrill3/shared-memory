@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: shared-memory-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: MEMORY_TOKEN
+        sync: false

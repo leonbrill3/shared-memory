@@ -1,0 +1,17 @@
+{
+  "name": "shared-memory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One shared memory for Muse, Claude, and ChatGPT — reachable by all three over MCP.",
+  "scripts": {
+    "start": "node src/mcp/server.mjs --http",
+    "mcp": "node src/mcp/server.mjs",
+    "mcp:http": "node src/mcp/server.mjs --http",
+    "backfill": "node src/capture/ingest.js backfill"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  }
+}

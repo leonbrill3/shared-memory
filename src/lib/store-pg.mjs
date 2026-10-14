@@ -1,10 +1,12 @@
-// Postgres-backed facts store. Same interface as store-file.mjs, async.
-// Lives in its own isolated table so it can safely share an existing database.
+// Multi-tenant Postgres store. Each user has their own token and an isolated
+// set of facts (scoped by user_id). Same fact interface as before, but every
+// call is scoped to a userId. Also handles user creation + token resolution.
 import crypto from 'node:crypto';
 import pg from 'pg';
 import * as match from './match.mjs';
 
-const TABLE = 'shared_memory_facts';
+const FACTS = 'shared_memory_facts';
+const USERS = 'shared_memory_users';
 const conn = process.env.DATABASE_URL;
 const pool = new pg.Pool({
   connectionString: conn,
@@ -14,9 +16,17 @@ const pool = new pg.Pool({
 
 let ready;
 async function init() {
-  if (!ready) {
-    ready = pool.query(`
-      CREATE TABLE IF NOT EXISTS ${TABLE} (
+  if (ready) return ready;
+  ready = (async () => {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${USERS} (
+        id uuid PRIMARY KEY,
+        token text UNIQUE NOT NULL,
+        label text,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${FACTS} (
         id uuid PRIMARY KEY,
         text text NOT NULL,
         tags text[] NOT NULL DEFAULT '{}',
@@ -25,8 +35,38 @@ async function init() {
         updated_at timestamptz NOT NULL DEFAULT now(),
         superseded_text text
       )`);
-  }
+    // migrate: add user_id if missing
+    await pool.query(`ALTER TABLE ${FACTS} ADD COLUMN IF NOT EXISTS user_id uuid`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_${FACTS}_user ON ${FACTS}(user_id)`);
+    // self-migrate the original single-tenant data to a Leon user keyed by MEMORY_TOKEN
+    const legacy = process.env.MEMORY_TOKEN;
+    if (legacy) {
+      let { rows } = await pool.query(`SELECT id FROM ${USERS} WHERE token=$1`, [legacy]);
+      let leonId = rows[0]?.id;
+      if (!leonId) {
+        leonId = crypto.randomUUID();
+        await pool.query(`INSERT INTO ${USERS}(id, token, label) VALUES ($1,$2,$3)`, [leonId, legacy, 'Leon (owner)']);
+      }
+      await pool.query(`UPDATE ${FACTS} SET user_id=$1 WHERE user_id IS NULL`, [leonId]);
+    }
+  })();
   return ready;
+}
+
+// --- users ---
+export async function getUserIdByToken(token) {
+  await init();
+  if (!token) return null;
+  const { rows } = await pool.query(`SELECT id FROM ${USERS} WHERE token=$1`, [token]);
+  return rows[0]?.id || null;
+}
+
+export async function createUser(label) {
+  await init();
+  const id = crypto.randomUUID();
+  const token = 'sm_' + crypto.randomBytes(24).toString('base64url');
+  await pool.query(`INSERT INTO ${USERS}(id, token, label) VALUES ($1,$2,$3)`, [id, token, label || null]);
+  return { id, token };
 }
 
 const row2fact = (r) => ({
@@ -41,60 +81,61 @@ function jaccard(a, b) {
   let inter = 0; for (const t of a) if (b.has(t)) inter++;
   return inter / (a.size + b.size - inter);
 }
+const normTag = (t) => String(t).toLowerCase().trim().replace(/\s+/g, '-');
 
-export async function addFact({ text, tags = [], source = 'unknown' }) {
+export async function addFact(userId, { text, tags = [], source = 'unknown' }) {
   await init();
   text = (text || '').trim();
   if (!text) throw new Error('text is required');
-  const { rows } = await pool.query(`SELECT id, text, tags FROM ${TABLE}`);
+  tags = [...new Set((tags || []).map(normTag))];
+  const { rows } = await pool.query(`SELECT id, text, tags FROM ${FACTS} WHERE user_id=$1`, [userId]);
   const incoming = tokenize(text);
   let best = null, bestScore = 0;
   for (const r of rows) {
     const s = jaccard(incoming, tokenize(r.text));
     if (s > bestScore) { bestScore = s; best = r; }
   }
-  if (bestScore >= 0.9) {
-    const { rows: [f] } = await pool.query(`SELECT * FROM ${TABLE} WHERE id=$1`, [best.id]);
+  if (bestScore >= 0.82) {
+    const { rows: [f] } = await pool.query(`SELECT * FROM ${FACTS} WHERE id=$1`, [best.id]);
     return { status: 'duplicate', fact: row2fact(f) };
   }
-  if (bestScore >= 0.5) {
+  if (bestScore >= 0.45) {
     const mergedTags = [...new Set([...(best.tags || []), ...tags])];
     const { rows: [f] } = await pool.query(
-      `UPDATE ${TABLE} SET text=$2, tags=$3, source=$4, updated_at=now(), superseded_text=$5
-       WHERE id=$1 RETURNING *`,
+      `UPDATE ${FACTS} SET text=$2, tags=$3, source=$4, updated_at=now(), superseded_text=$5 WHERE id=$1 RETURNING *`,
       [best.id, text, mergedTags, source, best.text]);
     return { status: 'updated', fact: row2fact(f) };
   }
   const id = crypto.randomUUID();
   const { rows: [f] } = await pool.query(
-    `INSERT INTO ${TABLE} (id, text, tags, source) VALUES ($1,$2,$3,$4) RETURNING *`,
-    [id, text, tags, source]);
+    `INSERT INTO ${FACTS} (id, user_id, text, tags, source) VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [id, userId, text, tags, source]);
   return { status: 'added', fact: row2fact(f) };
 }
 
-export async function updateFact(id, { text, tags }) {
+export async function updateFact(userId, id, { text, tags }) {
   await init();
-  const sets = [], vals = [id]; let i = 2;
+  const sets = [], vals = [id, userId]; let i = 3;
   if (text != null) { sets.push(`text=$${i++}`); vals.push(String(text).trim()); }
-  if (tags != null) { sets.push(`tags=$${i++}`); vals.push(tags); }
+  if (tags != null) { sets.push(`tags=$${i++}`); vals.push([...new Set(tags.map(normTag))]); }
   if (!sets.length) return { status: 'no_change' };
   sets.push('updated_at=now()');
-  const { rows } = await pool.query(`UPDATE ${TABLE} SET ${sets.join(', ')} WHERE id=$1 RETURNING *`, vals);
+  const { rows } = await pool.query(`UPDATE ${FACTS} SET ${sets.join(', ')} WHERE id=$1 AND user_id=$2 RETURNING *`, vals);
   return rows.length ? { status: 'updated', fact: row2fact(rows[0]) } : { status: 'not_found' };
 }
 
-export async function deleteFact(id) {
+export async function deleteFact(userId, id) {
   await init();
-  const { rowCount } = await pool.query(`DELETE FROM ${TABLE} WHERE id=$1`, [id]);
+  const { rowCount } = await pool.query(`DELETE FROM ${FACTS} WHERE id=$1 AND user_id=$2`, [id, userId]);
   return { status: rowCount ? 'deleted' : 'not_found' };
 }
 
-export async function searchFacts(query, { limit = 10, tag = null } = {}) {
+export async function searchFacts(userId, query, { limit = 10, tag = null } = {}) {
   await init();
   const q = match.terms(query);
   const { rows } = await pool.query(
-    tag ? `SELECT * FROM ${TABLE} WHERE $1 = ANY(tags)` : `SELECT * FROM ${TABLE}`,
-    tag ? [tag] : []);
+    tag ? `SELECT * FROM ${FACTS} WHERE user_id=$1 AND $2 = ANY(tags)` : `SELECT * FROM ${FACTS} WHERE user_id=$1`,
+    tag ? [userId, normTag(tag)] : [userId]);
   const scored = [];
   for (const r of rows) {
     const base = match.scoreText(q, r.text);
@@ -106,15 +147,15 @@ export async function searchFacts(query, { limit = 10, tag = null } = {}) {
   return scored.slice(0, limit).map((s) => row2fact(s.r));
 }
 
-export async function listFacts({ limit = 50 } = {}) {
+export async function listFacts(userId, { limit = 50 } = {}) {
   await init();
-  const { rows } = await pool.query(`SELECT * FROM ${TABLE} ORDER BY updated_at DESC LIMIT $1`, [limit]);
+  const { rows } = await pool.query(`SELECT * FROM ${FACTS} WHERE user_id=$1 ORDER BY updated_at DESC LIMIT $2`, [userId, limit]);
   return rows.map(row2fact);
 }
 
-export async function stats() {
+export async function stats(userId) {
   await init();
-  const { rows } = await pool.query(`SELECT tags FROM ${TABLE}`);
+  const { rows } = await pool.query(`SELECT tags FROM ${FACTS} WHERE user_id=$1`, [userId]);
   const tags = {};
   for (const r of rows) for (const t of (r.tags || [])) tags[t] = (tags[t] || 0) + 1;
   return { total: rows.length, tags };

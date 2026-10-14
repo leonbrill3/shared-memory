@@ -1,28 +1,22 @@
 #!/usr/bin/env node
-// The shared-memory MCP server. ONE server, three clients:
-//   - Claude      : add via stdio (claude mcp add) or remote URL
-//   - ChatGPT     : add the remote URL as a connector
-//   - Muse        : "build a custom connector" pointed at the remote URL
+// Multi-tenant shared-memory MCP server + website.
+//   GET  /            -> landing + dashboard (signup, connect steps, live facts)
+//   POST /api/signup  -> create a user, return their token + MCP url
+//   GET  /api/me      -> that user's facts + stats (bearer token)
+//   */mcp             -> the MCP endpoint, scoped to the token's user
 // Run modes:
-//   node src/mcp/server.mjs            # stdio  (local, for Claude Code)
-//   node src/mcp/server.mjs --http     # streamable HTTP (remote, for Muse/ChatGPT)
+//   node src/mcp/server.mjs            # stdio (local dev, single 'local' user)
+//   node src/mcp/server.mjs --http     # streamable HTTP (the deployed service)
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats } from '../lib/store.mjs';
+import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser } from '../lib/store.mjs';
+import { renderPage } from '../web/page.mjs';
 
 const fmt = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
-
-// Public deploys MUST set MEMORY_TOKEN. When set, every /mcp request needs
-// `Authorization: Bearer <token>`. When unset (local dev), access is open.
-const TOKEN = process.env.MEMORY_TOKEN;
-function authorized(req) {
-  if (!TOKEN) return true;
-  return (req.headers['authorization'] || '') === `Bearer ${TOKEN}`;
-}
 
 const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory used in common by ALL of the user's AI assistants (Muse, Claude, ChatGPT). Keeping it current is how those assistants stay on the same page.
 
@@ -32,128 +26,126 @@ Behave this way automatically, without being asked:
 3. NEVER save secrets, passwords, API keys, or tokens.
 Treat this shared memory as the single source of truth across all of the user's assistants.`;
 
-function createServer() {
-  const server = new McpServer({ name: 'shared-memory', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
+// A server instance is bound to one userId; its tools operate only on that user's memory.
+function createServer(userId) {
+  const server = new McpServer({ name: 'shared-memory', version: '0.2.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   server.registerTool('memory_add', {
     title: 'Add to shared memory',
-    description:
-      'Save a durable fact to the shared memory that Muse, Claude, and ChatGPT all share. ' +
-      'Use for lasting info about the user, their projects, preferences, people, and decisions — not transient chatter. ' +
-      'Near-identical facts are deduped; changed facts supersede the old version automatically.',
+    description: 'Save a durable fact to the shared memory that all of the user\'s assistants read. For lasting info about the user, their people, projects, preferences, and decisions — not transient chatter or secrets. Near-identical facts are deduped; changed facts supersede the old version.',
     inputSchema: {
       text: z.string().describe('The fact, as a short standalone statement.'),
       tags: z.array(z.string()).optional().describe('Optional topic tags, e.g. ["home","preference"].'),
-      source: z.string().optional().describe('Which assistant/app is saving this (e.g. "muse","claude","chatgpt").'),
+      source: z.string().optional().describe('Which assistant is saving this (e.g. "muse","claude","chatgpt").'),
     },
-  }, async ({ text, tags, source }) => fmt(await addFact({ text, tags, source: source || 'mcp' })));
+  }, async ({ text, tags, source }) => fmt(await addFact(userId, { text, tags, source: source || 'mcp' })));
 
   server.registerTool('memory_search', {
     title: 'Search shared memory',
-    description: 'Find relevant facts from the shared memory. Call this at the start of a task to stay on the same page as the other assistants.',
+    description: 'Find relevant facts from the shared memory. Call this at the start of a task to stay on the same page as the user\'s other assistants.',
     inputSchema: {
       query: z.string().describe('What to look for.'),
       limit: z.number().int().positive().max(50).optional(),
-      tag: z.string().optional().describe('Restrict to a tag.'),
+      tag: z.string().optional(),
     },
-  }, async ({ query, limit, tag }) => fmt(await searchFacts(query, { limit: limit || 10, tag: tag || null })));
+  }, async ({ query, limit, tag }) => fmt(await searchFacts(userId, query, { limit: limit || 10, tag: tag || null })));
 
   server.registerTool('memory_list', {
     title: 'List recent memory',
     description: 'List the most recently updated facts in the shared memory.',
     inputSchema: { limit: z.number().int().positive().max(200).optional() },
-  }, async ({ limit }) => fmt(await listFacts({ limit: limit || 50 })));
+  }, async ({ limit }) => fmt(await listFacts(userId, { limit: limit || 50 })));
 
   server.registerTool('memory_update', {
     title: 'Update a fact',
-    description: 'Update an existing fact by id (e.g. to correct or refine it).',
-    inputSchema: {
-      id: z.string(),
-      text: z.string().optional(),
-      tags: z.array(z.string()).optional(),
-    },
-  }, async ({ id, text, tags }) => fmt(await updateFact(id, { text, tags })));
+    description: 'Update an existing fact by id.',
+    inputSchema: { id: z.string(), text: z.string().optional(), tags: z.array(z.string()).optional() },
+  }, async ({ id, text, tags }) => fmt(await updateFact(userId, id, { text, tags })));
 
   server.registerTool('memory_delete', {
     title: 'Delete a fact',
     description: 'Remove a fact from shared memory by id.',
     inputSchema: { id: z.string() },
-  }, async ({ id }) => fmt(await deleteFact(id)));
+  }, async ({ id }) => fmt(await deleteFact(userId, id)));
 
   server.registerTool('memory_stats', {
     title: 'Memory stats',
-    description: 'How many facts are stored, and the tag breakdown.',
+    description: 'How many facts are stored and the tag breakdown.',
     inputSchema: {},
-  }, async () => fmt(await stats()));
+  }, async () => fmt(await stats(userId)));
 
   return server;
 }
 
-function readBody(req) {
-  return new Promise((resolve) => {
-    let data = '';
-    req.on('data', (c) => (data += c));
-    req.on('end', () => { try { resolve(data ? JSON.parse(data) : undefined); } catch { resolve(undefined); } });
-  });
-}
+const readBody = (req) => new Promise((resolve) => {
+  let d = ''; req.on('data', (c) => (d += c)); req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch { resolve({}); } });
+});
+const bearer = (req) => (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '') || null;
+const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
 async function main() {
-  if (process.argv.includes('--http')) {
-    const PORT = Number(process.env.PORT) || 8787;
-    const transports = {}; // sessionId -> transport (one memory server per live session)
+  if (!process.argv.includes('--http')) {
+    const server = createServer('local');
+    await server.connect(new StdioServerTransport());
+    console.error('[shared-memory] MCP (stdio) ready');
+    return;
+  }
 
-    const httpServer = http.createServer(async (req, res) => {
-      if (req.url && req.url.startsWith('/health')) {
-        res.writeHead(200, { 'content-type': 'text/plain' });
-        return res.end('ok');
-      }
-      if (!req.url || !req.url.startsWith('/mcp')) {
-        res.writeHead(404, { 'content-type': 'text/plain' });
-        return res.end('not found');
-      }
+  const PORT = Number(process.env.PORT) || 8787;
+  const sessions = {}; // sessionId -> { transport, userId }
 
-      if (!authorized(req)) {
-        res.writeHead(401, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ jsonrpc: '2.0', id: null,
-          error: { code: -32001, message: 'Unauthorized: missing or bad bearer token.' } }));
-      }
+  const httpServer = http.createServer(async (req, res) => {
+    const url = req.url || '/';
 
+    if (url === '/' || url.startsWith('/?')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(renderPage()); }
+    if (url.startsWith('/health')) { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
+
+    if (url.startsWith('/api/signup') && req.method === 'POST') {
+      const body = await readBody(req);
+      const user = await createUser(body.label);
+      const proto = req.headers['x-forwarded-proto'] || 'http';
+      const mcpUrl = `${proto}://${req.headers.host}/mcp`;
+      return json(res, 200, { userId: user.id, token: user.token, mcpUrl });
+    }
+
+    if (url.startsWith('/api/me') && req.method === 'GET') {
+      const uid = await getUserIdByToken(bearer(req));
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const [st, facts] = [await stats(uid), await listFacts(uid, { limit: 200 })];
+      return json(res, 200, { stats: st, facts });
+    }
+
+    if (url.startsWith('/mcp')) {
+      const uid = await getUserIdByToken(bearer(req));
+      if (!uid) return json(res, 401, { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized: missing or unknown token.' } });
       const sid = req.headers['mcp-session-id'];
 
       if (req.method === 'POST') {
         const body = await readBody(req);
-        let transport = sid ? transports[sid] : undefined;
-        if (!transport && !sid && body && body.method === 'initialize') {
-          // New session: spin up a transport + its own memory server.
-          transport = new StreamableHTTPServerTransport({
+        let entry = sid ? sessions[sid] : undefined;
+        if (entry && entry.userId !== uid) return json(res, 403, { error: 'session/token mismatch' });
+        if (!entry && !sid && body && body.method === 'initialize') {
+          const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
-            onsessioninitialized: (id) => { transports[id] = transport; },
+            onsessioninitialized: (id) => { sessions[id] = { transport, userId: uid }; },
           });
-          transport.onclose = () => { if (transport.sessionId) delete transports[transport.sessionId]; };
-          await createServer().connect(transport);
+          transport.onclose = () => { if (transport.sessionId) delete sessions[transport.sessionId]; };
+          await createServer(uid).connect(transport);
+          entry = { transport, userId: uid };
         }
-        if (!transport) {
-          res.writeHead(400, { 'content-type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id: body?.id ?? null,
-            error: { code: -32000, message: 'No valid session; send an initialize request first.' } }));
-        }
-        return transport.handleRequest(req, res, body);
+        if (!entry) return json(res, 400, { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32000, message: 'No valid session; send initialize first.' } });
+        return entry.transport.handleRequest(req, res, body);
       }
-
       if (req.method === 'GET' || req.method === 'DELETE') {
-        if (!sid || !transports[sid]) { res.writeHead(400); return res.end('invalid or missing session'); }
-        return transports[sid].handleRequest(req, res);
+        const entry = sid && sessions[sid];
+        if (!entry || entry.userId !== uid) { res.writeHead(400); return res.end('invalid session'); }
+        return entry.transport.handleRequest(req, res);
       }
+    }
 
-      res.writeHead(405).end();
-    });
-    httpServer.listen(PORT, () => console.error(`[shared-memory] MCP (streamable HTTP) on :${PORT}/mcp`));
-  } else {
-    const server = createServer();
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error('[shared-memory] MCP (stdio) ready');
-  }
+    res.writeHead(404, { 'content-type': 'text/plain' }); res.end('not found');
+  });
+  httpServer.listen(PORT, () => console.error(`[shared-memory] http + MCP on :${PORT}`));
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

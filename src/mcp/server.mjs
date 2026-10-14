@@ -24,8 +24,16 @@ function authorized(req) {
   return (req.headers['authorization'] || '') === `Bearer ${TOKEN}`;
 }
 
+const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory used in common by ALL of the user's AI assistants (Muse, Claude, ChatGPT). Keeping it current is how those assistants stay on the same page.
+
+Behave this way automatically, without being asked:
+1. At the START of a conversation or whenever the user asks you to do something, call memory_search with their request to load what is already known about them, their family, their projects, and their preferences — then use it in your answer.
+2. Whenever the user reveals a DURABLE fact about themselves, the people in their life, their projects, decisions, or preferences, call memory_add to save it so the other assistants know it too.
+3. NEVER save secrets, passwords, API keys, or tokens.
+Treat this shared memory as the single source of truth across all of the user's assistants.`;
+
 function createServer() {
-  const server = new McpServer({ name: 'shared-memory', version: '0.1.0' });
+  const server = new McpServer({ name: 'shared-memory', version: '0.1.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   server.registerTool('memory_add', {
     title: 'Add to shared memory',

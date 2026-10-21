@@ -25,7 +25,8 @@ Behave this way automatically, without being asked:
 2. Whenever the user reveals a DURABLE fact about themselves, the people in their life, their projects, decisions, or preferences, call memory_add to save it so the other assistants know it too.
 3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. When you surface something NEW that the user may need to act on, call log_event so it appears on their shared board.
 4. When the user says they have handled or no longer care about something, call resolve_item so every assistant stops raising it.
-5. NEVER save secrets, passwords, API keys, or tokens.
+5. CRITICAL — when YOU take a real action on the user's behalf or complete a task for them (file a form or request, send a message or reply, make a booking, pay a bill, submit an application, schedule something, resolve an issue), you MUST immediately: (a) call log_event with a clear past-tense description of exactly what you did (e.g. "Filed the Aqualectra reimbursement request for Karen Cheis"), and (b) call list_open_items and resolve_item for any open item this action handles — so the other assistants (including the user's dashboard) know it is DONE and stop raising it. Recording what you did is as important as doing it; an action the others can't see leaves them nagging the user about something already finished.
+6. NEVER save secrets, passwords, API keys, or tokens.
 Treat this shared memory as the single source of truth across all of the user's assistants.`;
 
 // A server instance is bound to one userId; its tools operate only on that user's memory.

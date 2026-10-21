@@ -212,9 +212,10 @@ async function main() {
       if (!uid) return json(res, 401, { error: 'invalid token' });
       const open = /[?&]open=1/.test(url);
       let events = await listEvents(uid, { limit: 100, status: open ? 'open' : null });
-      // The open board is actionable items only — never the resolution/activity
-      // log entries (type 'resolved'/'learned'), which are feed signals, not tasks.
-      if (open) events = events.filter((e) => e.type !== 'resolved' && e.type !== 'learned');
+      // The open board is actionable items only — never log/record entries:
+      // 'resolved'/'learned' (feed signals) or 'done' (completion records that an
+      // assistant logs so reconciliation can see them, not tasks for the user).
+      if (open) events = events.filter((e) => !['resolved', 'learned', 'done'].includes(e.type));
       return json(res, 200, { events });
     }
 

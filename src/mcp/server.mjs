@@ -202,7 +202,7 @@ async function main() {
       if (open.some((e) => (e.text || '').trim() === String(body.text).trim())) {
         return json(res, 200, { status: 'duplicate' });
       }
-      const ev = await emitEvent(uid, { type: body.type || 'event', text: String(body.text), source: body.source || 'sync' });
+      const ev = await emitEvent(uid, { type: body.type || 'event', text: String(body.text), source: body.source || 'sync', meta: body.meta || null });
       return json(res, 200, { status: 'created', event: ev });
     }
 

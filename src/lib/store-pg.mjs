@@ -7,6 +7,7 @@ import * as match from './match.mjs';
 
 const FACTS = 'shared_memory_facts';
 const USERS = 'shared_memory_users';
+const EVENTS_T = 'shared_memory_events';
 const conn = process.env.DATABASE_URL;
 const pool = new pg.Pool({
   connectionString: conn,
@@ -38,6 +39,19 @@ async function init() {
     // migrate: add user_id if missing
     await pool.query(`ALTER TABLE ${FACTS} ADD COLUMN IF NOT EXISTS user_id uuid`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_${FACTS}_user ON ${FACTS}(user_id)`);
+    // live activity stream (the "heartbeat" — time-stamped events as they happen)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${EVENTS_T} (
+        id uuid PRIMARY KEY,
+        user_id uuid NOT NULL,
+        ts timestamptz NOT NULL DEFAULT now(),
+        type text,
+        text text NOT NULL,
+        source text,
+        actor text,
+        meta jsonb
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_${EVENTS_T}_user_ts ON ${EVENTS_T}(user_id, ts DESC)`);
     // self-migrate the original single-tenant data to a Leon user keyed by MEMORY_TOKEN
     const legacy = process.env.MEMORY_TOKEN;
     if (legacy) {
@@ -159,4 +173,22 @@ export async function stats(userId) {
   const tags = {};
   for (const r of rows) for (const t of (r.tags || [])) tags[t] = (tags[t] || 0) + 1;
   return { total: rows.length, tags };
+}
+
+// --- live activity events ---
+const row2event = (r) => ({ id: r.id, ts: r.ts, type: r.type, text: r.text, source: r.source, actor: r.actor, meta: r.meta || null });
+
+export async function logEvent(userId, { type = 'event', text, source = null, actor = null, meta = null }) {
+  await init();
+  const id = crypto.randomUUID();
+  const { rows: [r] } = await pool.query(
+    `INSERT INTO ${EVENTS_T}(id, user_id, type, text, source, actor, meta) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [id, userId, type, text, source, actor, meta ? JSON.stringify(meta) : null]);
+  return row2event(r);
+}
+
+export async function listEvents(userId, { limit = 50 } = {}) {
+  await init();
+  const { rows } = await pool.query(`SELECT * FROM ${EVENTS_T} WHERE user_id=$1 ORDER BY ts DESC LIMIT $2`, [userId, limit]);
+  return rows.map(row2event);
 }

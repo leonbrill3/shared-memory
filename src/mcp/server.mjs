@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser } from '../lib/store.mjs';
+import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents } from '../lib/store.mjs';
 import { renderPage } from '../web/page.mjs';
 
 const fmt = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -27,8 +27,9 @@ Behave this way automatically, without being asked:
 Treat this shared memory as the single source of truth across all of the user's assistants.`;
 
 // A server instance is bound to one userId; its tools operate only on that user's memory.
-function createServer(userId) {
-  const server = new McpServer({ name: 'shared-memory', version: '0.2.0' }, { instructions: SERVER_INSTRUCTIONS });
+// `emit(evt)` records a live activity event (persisted + streamed to the board).
+function createServer(userId, emit) {
+  const server = new McpServer({ name: 'shared-memory', version: '0.3.0' }, { instructions: SERVER_INSTRUCTIONS });
 
   server.registerTool('memory_add', {
     title: 'Add to shared memory',
@@ -38,7 +39,21 @@ function createServer(userId) {
       tags: z.array(z.string()).optional().describe('Optional topic tags, e.g. ["home","preference"].'),
       source: z.string().optional().describe('Which assistant is saving this (e.g. "muse","claude","chatgpt").'),
     },
-  }, async ({ text, tags, source }) => fmt(await addFact(userId, { text, tags, source: source || 'mcp' })));
+  }, async ({ text, tags, source }) => {
+    const r = await addFact(userId, { text, tags, source: source || 'mcp' });
+    if (r.status !== 'duplicate') emit?.({ type: 'learned', text: r.fact.text, source: source || 'mcp', actor: source || 'mcp' });
+    return fmt(r);
+  });
+
+  server.registerTool('log_event', {
+    title: 'Log a live activity event',
+    description: 'Record something that just HAPPENED (an action taken, a message, a booking, a deadline, a status change) so it appears on the user\'s live activity board. Use for transient happenings; use memory_add for durable facts.',
+    inputSchema: {
+      text: z.string().describe('What happened, as a short line.'),
+      type: z.string().optional().describe('e.g. "action","email","calendar","deadline","status".'),
+      source: z.string().optional().describe('Which assistant/app (e.g. "muse","claude","chatgpt").'),
+    },
+  }, async ({ text, type, source }) => fmt(await (emit?.({ type: type || 'event', text, source: source || 'mcp', actor: source || 'mcp' }) ?? { ok: true })));
 
   server.registerTool('memory_search', {
     title: 'Search shared memory',
@@ -85,7 +100,7 @@ const json = (res, code, obj) => { res.writeHead(code, { 'content-type': 'applic
 
 async function main() {
   if (!process.argv.includes('--http')) {
-    const server = createServer('local');
+    const server = createServer('local', (evt) => logEvent('local', evt));
     await server.connect(new StdioServerTransport());
     console.error('[shared-memory] MCP (stdio) ready');
     return;
@@ -93,6 +108,15 @@ async function main() {
 
   const PORT = Number(process.env.PORT) || 8787;
   const sessions = {}; // sessionId -> { transport, userId }
+  const sseSubs = new Map(); // userId -> Set<res>, live board subscribers
+
+  // Persist an event and push it to any live board watching this user.
+  async function emitEvent(userId, evt) {
+    const stored = await logEvent(userId, evt);
+    const subs = sseSubs.get(userId);
+    if (subs) for (const r of subs) { try { r.write(`data: ${JSON.stringify(stored)}\n\n`); } catch {} }
+    return stored;
+  }
 
   const httpServer = http.createServer(async (req, res) => {
     const url = req.url || '/';
@@ -115,6 +139,27 @@ async function main() {
       return json(res, 200, { stats: st, facts });
     }
 
+    // token can come from header or ?token= (EventSource can't set headers)
+    const qToken = (() => { try { return new URL(url, 'http://x').searchParams.get('token'); } catch { return null; } })();
+
+    if (url.startsWith('/api/events/stream')) {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      res.write(': connected\n\n');
+      if (!sseSubs.has(uid)) sseSubs.set(uid, new Set());
+      sseSubs.get(uid).add(res);
+      const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, 25000);
+      req.on('close', () => { clearInterval(ka); sseSubs.get(uid)?.delete(res); });
+      return;
+    }
+
+    if (url.startsWith('/api/events') && req.method === 'GET') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      return json(res, 200, { events: await listEvents(uid, { limit: 100 }) });
+    }
+
     if (url.startsWith('/mcp')) {
       const uid = await getUserIdByToken(bearer(req));
       if (!uid) return json(res, 401, { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized: missing or unknown token.' } });
@@ -130,7 +175,7 @@ async function main() {
             onsessioninitialized: (id) => { sessions[id] = { transport, userId: uid }; },
           });
           transport.onclose = () => { if (transport.sessionId) delete sessions[transport.sessionId]; };
-          await createServer(uid).connect(transport);
+          await createServer(uid, (evt) => emitEvent(uid, evt)).connect(transport);
           entry = { transport, userId: uid };
         }
         if (!entry) return json(res, 400, { jsonrpc: '2.0', id: body?.id ?? null, error: { code: -32000, message: 'No valid session; send initialize first.' } });

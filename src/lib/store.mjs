@@ -17,3 +17,5 @@ export const deleteFact = (u, id) => impl.deleteFact(u, id);
 export const searchFacts = (u, q, o) => impl.searchFacts(u, q, o);
 export const listFacts = (u, o) => impl.listFacts(u, o);
 export const stats = (u) => impl.stats(u);
+export const logEvent = (u, e) => impl.logEvent(u, e);
+export const listEvents = (u, o) => impl.listEvents(u, o);

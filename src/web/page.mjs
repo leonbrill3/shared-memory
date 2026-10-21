@@ -41,6 +41,12 @@ export function renderPage() {
 
   <div id="dash" class="hidden">
     <div class="card">
+      <h2 style="margin-top:0">Activity <span class="pill" id="live">● live</span></h2>
+      <p class="small muted">Things as they happen — what your assistants learn and do, in real time.</p>
+      <div id="feed"><p class="muted small">Waiting for activity…</p></div>
+    </div>
+
+    <div class="card">
       <h2 style="margin-top:0">Your connection</h2>
       <p class="small muted">Paste these into each assistant once. The behavior (search memory, save facts) is built in — you don't configure anything else.</p>
       <div class="field"><span class="muted small">URL</span><span class="mono" id="url"></span><button class="ghost copy" data-c="url">Copy</button></div>
@@ -83,10 +89,28 @@ async function load(){
   el.innerHTML=j.facts.map(f=>'<div class="fact">'+esc(f.text)+' <span class="tags">'+(f.tags||[]).map(t=>'#'+esc(t)).join(' ')+'</span></div>').join('');
 }
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+let es=null;
+const ago=t=>{const s=(Date.now()-new Date(t))/1000;if(s<60)return'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';};
+function evHtml(e){const ic={learned:'🧠',action:'⚡',email:'✉️',calendar:'📅',deadline:'⏰',status:'🔔'}[e.type]||'•';
+  return '<div class="fact"><span>'+ic+'</span> '+esc(e.text)+' <span class="tags">'+esc(e.source||'')+' · '+ago(e.ts)+'</span></div>';}
+async function loadEvents(){
+  const r=await fetch('/api/events',{headers:{Authorization:'Bearer '+token}}); if(!r.ok)return;
+  const j=await r.json(); const el=$('#feed');
+  el.innerHTML=j.events.length?j.events.map(evHtml).join(''):'<p class="muted small">No activity yet — it appears here the moment an assistant learns or does something.</p>';
+}
+function streamEvents(){
+  if(es)es.close();
+  es=new EventSource('/api/events/stream?token='+encodeURIComponent(token));
+  es.onmessage=ev=>{try{const e=JSON.parse(ev.data);const el=$('#feed');
+    if(el.querySelector('p'))el.innerHTML='';
+    el.insertAdjacentHTML('afterbegin',evHtml(e));}catch{}};
+  es.onerror=()=>{$('#live').textContent='● reconnecting';};
+  es.onopen=()=>{$('#live').textContent='● live';};
+}
 function show(){
   if(token){$('#signup').classList.add('hidden');$('#dash').classList.remove('hidden');
-    $('#url').textContent=mcp;$('#m1').textContent=mcp;$('#tok').textContent=token;load();}
-  else{$('#signup').classList.remove('hidden');$('#dash').classList.add('hidden');}
+    $('#url').textContent=mcp;$('#m1').textContent=mcp;$('#tok').textContent=token;load();loadEvents();streamEvents();}
+  else{$('#signup').classList.remove('hidden');$('#dash').classList.add('hidden');if(es)es.close();}
 }
 $('#create').onclick=signup;
 $('#refresh').onclick=load;

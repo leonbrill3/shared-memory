@@ -10,6 +10,7 @@ import * as match from './match.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
 const MEM = path.join(DATA_DIR, 'memory.jsonl');
+const ACT = path.join(DATA_DIR, 'activity.jsonl');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export async function getUserIdByToken() { return 'local'; }
@@ -68,4 +69,16 @@ export async function stats(_userId) {
   const facts = readAll(); const tags = {};
   for (const f of facts) for (const t of (f.tags || [])) tags[t] = (tags[t] || 0) + 1;
   return { total: facts.length, tags };
+}
+
+export async function logEvent(_userId, { type = 'event', text, source = null, actor = null, meta = null }) {
+  const e = { id: crypto.randomUUID(), ts: nowISO(), type, text, source, actor, meta };
+  fs.appendFileSync(ACT, JSON.stringify(e) + '\n');
+  return e;
+}
+export async function listEvents(_userId, { limit = 50 } = {}) {
+  if (!fs.existsSync(ACT)) return [];
+  const all = fs.readFileSync(ACT, 'utf8').split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  return all.reverse().slice(0, limit);
 }

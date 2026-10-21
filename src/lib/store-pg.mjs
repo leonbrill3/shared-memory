@@ -52,6 +52,10 @@ async function init() {
         meta jsonb
       )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_${EVENTS_T}_user_ts ON ${EVENTS_T}(user_id, ts DESC)`);
+    // actionable state: cards you tap to resolve; resolution propagates to every AI
+    await pool.query(`ALTER TABLE ${EVENTS_T} ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'open'`);
+    await pool.query(`ALTER TABLE ${EVENTS_T} ADD COLUMN IF NOT EXISTS resolved_at timestamptz`);
+    await pool.query(`ALTER TABLE ${EVENTS_T} ADD COLUMN IF NOT EXISTS resolved_by text`);
     // self-migrate the original single-tenant data to a Leon user keyed by MEMORY_TOKEN
     const legacy = process.env.MEMORY_TOKEN;
     if (legacy) {
@@ -176,7 +180,7 @@ export async function stats(userId) {
 }
 
 // --- live activity events ---
-const row2event = (r) => ({ id: r.id, ts: r.ts, type: r.type, text: r.text, source: r.source, actor: r.actor, meta: r.meta || null });
+const row2event = (r) => ({ id: r.id, ts: r.ts, type: r.type, text: r.text, source: r.source, actor: r.actor, status: r.status || 'open', resolvedAt: r.resolved_at || null, resolvedBy: r.resolved_by || null, meta: r.meta || null });
 
 export async function logEvent(userId, { type = 'event', text, source = null, actor = null, meta = null }) {
   await init();
@@ -187,8 +191,20 @@ export async function logEvent(userId, { type = 'event', text, source = null, ac
   return row2event(r);
 }
 
-export async function listEvents(userId, { limit = 50 } = {}) {
+export async function listEvents(userId, { limit = 50, status = null } = {}) {
   await init();
-  const { rows } = await pool.query(`SELECT * FROM ${EVENTS_T} WHERE user_id=$1 ORDER BY ts DESC LIMIT $2`, [userId, limit]);
+  const { rows } = await pool.query(
+    status ? `SELECT * FROM ${EVENTS_T} WHERE user_id=$1 AND status=$2 ORDER BY ts DESC LIMIT $3`
+           : `SELECT * FROM ${EVENTS_T} WHERE user_id=$1 ORDER BY ts DESC LIMIT $2`,
+    status ? [userId, status, limit] : [userId, limit]);
   return rows.map(row2event);
+}
+
+// Resolve an item (done / dismissed / snoozed). Returns the updated event.
+export async function resolveEvent(userId, id, { status = 'done', by = null } = {}) {
+  await init();
+  const { rows } = await pool.query(
+    `UPDATE ${EVENTS_T} SET status=$3, resolved_at=now(), resolved_by=$4 WHERE id=$1 AND user_id=$2 RETURNING *`,
+    [id, userId, status, by]);
+  return rows.length ? row2event(rows[0]) : null;
 }

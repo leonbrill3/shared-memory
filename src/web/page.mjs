@@ -25,6 +25,13 @@ export function renderPage() {
   ol{padding-left:20px} li{margin:8px 0}
   .fact{border-bottom:1px solid var(--line);padding:9px 0}
   .fact .tags{color:var(--accent);font-size:12px}
+  .ci{display:flex;gap:12px;align-items:center;padding:12px;border:1px solid var(--line);border-radius:12px;margin:8px 0;overflow:hidden}
+  .ci-ic{font-size:20px;line-height:1}
+  .ci-body{flex:1;min-width:0}
+  .ci-acts{display:flex;gap:6px;flex-shrink:0}
+  .act{width:34px;height:34px;padding:0;border-radius:50%;font-size:15px;background:var(--chip);color:var(--ink)}
+  .act.done:hover{background:#d8f5dd}
+  .act.dismiss:hover{background:#f5dada}
   .muted{color:var(--muted)} .small{font-size:13px}
   .hidden{display:none}
   .pill{display:inline-block;background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;margin-right:6px}
@@ -91,19 +98,30 @@ async function load(){
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 let es=null;
 const ago=t=>{const s=(Date.now()-new Date(t))/1000;if(s<60)return'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago';};
-function evHtml(e){const ic={learned:'🧠',action:'⚡',email:'✉️',calendar:'📅',deadline:'⏰',status:'🔔'}[e.type]||'•';
-  return '<div class="fact"><span>'+ic+'</span> '+esc(e.text)+' <span class="tags">'+esc(e.source||'')+' · '+ago(e.ts)+'</span></div>';}
+const ICON={alert:'🚨',deadline:'⏰',email:'✉️',calendar:'📅',task:'✅',action:'⚡',status:'🔔',payment:'💳',event:'•'};
+function cardHtml(e){const ic=ICON[e.type]||'•';
+  return '<div class="ci" data-id="'+e.id+'">'
+    +'<div class="ci-ic">'+ic+'</div>'
+    +'<div class="ci-body"><div>'+esc(e.text)+'</div><div class="tags">'+esc(e.source||'')+' · '+ago(e.ts)+'</div></div>'
+    +'<div class="ci-acts"><button class="act done" title="Done">✓</button><button class="act dismiss" title="Dismiss">✕</button></div></div>';}
 async function loadEvents(){
-  const r=await fetch('/api/events',{headers:{Authorization:'Bearer '+token}}); if(!r.ok)return;
-  const j=await r.json(); const el=$('#feed');
-  el.innerHTML=j.events.length?j.events.map(evHtml).join(''):'<p class="muted small">No activity yet — it appears here the moment an assistant learns or does something.</p>';
+  const r=await fetch('/api/events?open=1',{headers:{Authorization:'Bearer '+token}}); if(!r.ok)return;
+  const items=(await r.json()).events.filter(e=>e.type!=='learned'&&e.type!=='resolved');
+  const el=$('#feed');
+  el.innerHTML=items.length?items.map(cardHtml).join(''):'<p class="muted small">All clear — nothing open. New items appear the moment an assistant flags something.</p>';
+  el.querySelectorAll('.ci').forEach(c=>{const id=c.dataset.id;
+    c.querySelector('.done').onclick=()=>resolve(id,'done',c);
+    c.querySelector('.dismiss').onclick=()=>resolve(id,'dismissed',c);});
+}
+async function resolve(id,status,el){
+  el.style.opacity=.35;el.style.pointerEvents='none';
+  await fetch('/api/events/'+id+'/resolve',{method:'POST',headers:{'content-type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({status})});
+  el.style.transition='all .25s';el.style.height='0';el.style.margin='0';el.style.padding='0';setTimeout(()=>el.remove(),260);
 }
 function streamEvents(){
   if(es)es.close();
   es=new EventSource('/api/events/stream?token='+encodeURIComponent(token));
-  es.onmessage=ev=>{try{const e=JSON.parse(ev.data);const el=$('#feed');
-    if(el.querySelector('p'))el.innerHTML='';
-    el.insertAdjacentHTML('afterbegin',evHtml(e));}catch{}};
+  es.onmessage=()=>loadEvents();
   es.onerror=()=>{$('#live').textContent='● reconnecting';};
   es.onopen=()=>{$('#live').textContent='● live';};
 }

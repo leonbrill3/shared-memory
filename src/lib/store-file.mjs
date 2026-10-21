@@ -71,14 +71,25 @@ export async function stats(_userId) {
   return { total: facts.length, tags };
 }
 
+function readActs() {
+  if (!fs.existsSync(ACT)) return [];
+  return fs.readFileSync(ACT, 'utf8').split('\n').filter(Boolean)
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+}
 export async function logEvent(_userId, { type = 'event', text, source = null, actor = null, meta = null }) {
-  const e = { id: crypto.randomUUID(), ts: nowISO(), type, text, source, actor, meta };
+  const e = { id: crypto.randomUUID(), ts: nowISO(), type, text, source, actor, status: 'open', resolvedAt: null, resolvedBy: null, meta };
   fs.appendFileSync(ACT, JSON.stringify(e) + '\n');
   return e;
 }
-export async function listEvents(_userId, { limit = 50 } = {}) {
-  if (!fs.existsSync(ACT)) return [];
-  const all = fs.readFileSync(ACT, 'utf8').split('\n').filter(Boolean)
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  return all.reverse().slice(0, limit);
+export async function listEvents(_userId, { limit = 50, status = null } = {}) {
+  let all = readActs().reverse();
+  if (status) all = all.filter((e) => (e.status || 'open') === status);
+  return all.slice(0, limit);
+}
+export async function resolveEvent(_userId, id, { status = 'done', by = null } = {}) {
+  const all = readActs(); const i = all.findIndex((e) => e.id === id);
+  if (i < 0) return null;
+  all[i] = { ...all[i], status, resolvedAt: nowISO(), resolvedBy: by };
+  fs.writeFileSync(ACT, all.map((x) => JSON.stringify(x)).join('\n') + (all.length ? '\n' : ''));
+  return all[i];
 }

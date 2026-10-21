@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents } from '../lib/store.mjs';
+import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents, resolveEvent } from '../lib/store.mjs';
 import { renderPage } from '../web/page.mjs';
 
 const fmt = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -23,7 +23,9 @@ const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory use
 Behave this way automatically, without being asked:
 1. At the START of a conversation or whenever the user asks you to do something, call memory_search with their request to load what is already known about them, their family, their projects, and their preferences — then use it in your answer.
 2. Whenever the user reveals a DURABLE fact about themselves, the people in their life, their projects, decisions, or preferences, call memory_add to save it so the other assistants know it too.
-3. NEVER save secrets, passwords, API keys, or tokens.
+3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. When you surface something NEW that the user may need to act on, call log_event so it appears on their shared board.
+4. When the user says they have handled or no longer care about something, call resolve_item so every assistant stops raising it.
+5. NEVER save secrets, passwords, API keys, or tokens.
 Treat this shared memory as the single source of truth across all of the user's assistants.`;
 
 // A server instance is bound to one userId; its tools operate only on that user's memory.
@@ -54,6 +56,30 @@ function createServer(userId, emit) {
       source: z.string().optional().describe('Which assistant/app (e.g. "muse","claude","chatgpt").'),
     },
   }, async ({ text, type, source }) => fmt(await (emit?.({ type: type || 'event', text, source: source || 'mcp', actor: source || 'mcp' }) ?? { ok: true })));
+
+  server.registerTool('list_open_items', {
+    title: 'List open board items',
+    description: 'List the items currently OPEN on the user\'s shared board (things not yet handled/dismissed). Call this before alerting the user to anything, so you don\'t raise something already on the board or already resolved.',
+    inputSchema: { limit: z.number().int().positive().max(100).optional() },
+  }, async ({ limit }) => {
+    const items = (await listEvents(userId, { limit: (limit || 50) * 3, status: 'open' }))
+      .filter((e) => e.type !== 'learned' && e.type !== 'resolved');
+    return fmt(items.slice(0, limit || 50));
+  });
+
+  server.registerTool('resolve_item', {
+    title: 'Resolve a board item',
+    description: 'Mark a board item handled so EVERY assistant stops raising it. Use when the user indicates they did it or no longer care. status: "done" (handled) or "dismissed" (ignore).',
+    inputSchema: {
+      id: z.string().describe('The item id.'),
+      status: z.enum(['done', 'dismissed', 'snoozed']).optional(),
+      source: z.string().optional(),
+    },
+  }, async ({ id, status, source }) => {
+    const r = await resolveEvent(userId, id, { status: status || 'done', by: source || 'mcp' });
+    if (r) emit?.({ type: 'resolved', text: `${status === 'dismissed' ? 'Dismissed' : 'Done'}: ${r.text}`, source: source || 'mcp', actor: source || 'mcp' });
+    return fmt(r || { status: 'not_found' });
+  });
 
   server.registerTool('memory_search', {
     title: 'Search shared memory',
@@ -154,10 +180,22 @@ async function main() {
       return;
     }
 
+    const resolveMatch = url.match(/^\/api\/events\/([^/?]+)\/resolve/);
+    if (resolveMatch && req.method === 'POST') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const body = await readBody(req);
+      const st = body.status || 'done';
+      const r = await resolveEvent(uid, resolveMatch[1], { status: st, by: 'you' });
+      if (r) await emitEvent(uid, { type: 'resolved', text: `${st === 'dismissed' ? 'Dismissed' : 'Done'}: ${r.text}`, source: 'you', actor: 'you' });
+      return json(res, r ? 200 : 404, r || { error: 'not found' });
+    }
+
     if (url.startsWith('/api/events') && req.method === 'GET') {
       const uid = await getUserIdByToken(bearer(req) || qToken);
       if (!uid) return json(res, 401, { error: 'invalid token' });
-      return json(res, 200, { events: await listEvents(uid, { limit: 100 }) });
+      const open = /[?&]open=1/.test(url);
+      return json(res, 200, { events: await listEvents(uid, { limit: 100, status: open ? 'open' : null }) });
     }
 
     if (url.startsWith('/mcp')) {

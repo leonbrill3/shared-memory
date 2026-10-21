@@ -44,6 +44,8 @@ export function renderPage() {
     <h2 style="margin-top:0">Create your shared memory</h2>
     <p class="muted small">No email needed. You get a private memory and a secret key. Keep the key safe — anyone with it can read your memory.</p>
     <button id="create">Create my memory →</button>
+    <p class="small muted" style="margin-top:14px">Already have a key? <a href="#" id="havekey">Enter it</a></p>
+    <div id="keyin" class="hidden"><div class="field"><input class="mono" id="keyval" placeholder="sm_… or your token" style="flex:1;border:0;background:transparent;outline:none"><button class="copy" id="usekey">Use</button></div></div>
   </div>
 
   <div id="dash" class="hidden">
@@ -80,7 +82,9 @@ export function renderPage() {
 <script>
 const $=s=>document.querySelector(s);
 const base=location.origin, mcp=base+'/mcp';
-let token=localStorage.getItem('sm_token');
+const urlTok=new URLSearchParams(location.search).get('token');
+let token=urlTok||localStorage.getItem('sm_token');
+if(urlTok){localStorage.setItem('sm_token',urlTok);history.replaceState({},'',location.pathname);}
 
 async function signup(){
   const r=await fetch('/api/signup',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
@@ -131,6 +135,8 @@ function show(){
   else{$('#signup').classList.remove('hidden');$('#dash').classList.add('hidden');if(es)es.close();}
 }
 $('#create').onclick=signup;
+$('#havekey').onclick=e=>{e.preventDefault();$('#keyin').classList.toggle('hidden');};
+$('#usekey').onclick=()=>{const v=$('#keyval').value.trim();if(!v)return;token=v;localStorage.setItem('sm_token',v);show();};
 $('#refresh').onclick=load;
 $('#forget').onclick=e=>{e.preventDefault();localStorage.removeItem('sm_token');token=null;show();};
 document.querySelectorAll('.copy').forEach(b=>b.onclick=()=>{

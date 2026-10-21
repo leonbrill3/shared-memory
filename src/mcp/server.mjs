@@ -210,7 +210,11 @@ async function main() {
       const uid = await getUserIdByToken(bearer(req) || qToken);
       if (!uid) return json(res, 401, { error: 'invalid token' });
       const open = /[?&]open=1/.test(url);
-      return json(res, 200, { events: await listEvents(uid, { limit: 100, status: open ? 'open' : null }) });
+      let events = await listEvents(uid, { limit: 100, status: open ? 'open' : null });
+      // The open board is actionable items only — never the resolution/activity
+      // log entries (type 'resolved'/'learned'), which are feed signals, not tasks.
+      if (open) events = events.filter((e) => e.type !== 'resolved' && e.type !== 'learned');
+      return json(res, 200, { events });
     }
 
     if (url.startsWith('/mcp')) {

@@ -191,6 +191,21 @@ async function main() {
       return json(res, r ? 200 : 404, r || { error: 'not found' });
     }
 
+    // Create a board item (used by connector syncs, e.g. Sprock's Gmail/Calendar sync).
+    // Dedups against currently-open items so repeated syncs don't pile up.
+    if (url.startsWith('/api/events') && !url.includes('/stream') && req.method === 'POST') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const body = await readBody(req);
+      if (!body.text) return json(res, 400, { error: 'text required' });
+      const open = await listEvents(uid, { limit: 200, status: 'open' });
+      if (open.some((e) => (e.text || '').trim() === String(body.text).trim())) {
+        return json(res, 200, { status: 'duplicate' });
+      }
+      const ev = await emitEvent(uid, { type: body.type || 'event', text: String(body.text), source: body.source || 'sync' });
+      return json(res, 200, { status: 'created', event: ev });
+    }
+
     if (url.startsWith('/api/events') && req.method === 'GET') {
       const uid = await getUserIdByToken(bearer(req) || qToken);
       if (!uid) return json(res, 401, { error: 'invalid token' });

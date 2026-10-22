@@ -27,7 +27,12 @@ Behave this way automatically, without being asked:
 4. When the user says they have handled or no longer care about something, call resolve_item so every assistant stops raising it.
 5. CRITICAL — when YOU take a real action on the user's behalf or complete a task for them (file a form or request, send a message or reply, make a booking, pay a bill, submit an application, schedule something, resolve an issue), you MUST immediately: (a) call log_event with a clear past-tense description of exactly what you did (e.g. "Filed the Aqualectra reimbursement request for Karen Cheis"), and (b) call list_open_items and resolve_item for any open item this action handles — so the other assistants (including the user's dashboard) know it is DONE and stop raising it. Recording what you did is as important as doing it; an action the others can't see leaves them nagging the user about something already finished.
 6. DELEGATED TASKS — when you call list_open_items, watch for any item ADDRESSED TO YOU: its text begins with "→ For <you>" (e.g. "→ For Muse: …") or its details name you as the assignee. Another assistant has handed you that task because you're the one who can do it. Carry it out when you're able (it will include the full context you need), then call resolve_item and log_event describing what you did. If you genuinely cannot do it, call log_event explaining why so it can be re-routed — do not silently ignore it.
-7. NEVER save secrets, passwords, API keys, or tokens.
+7. WHILE WORKING A DELEGATED TASK, keep the user's dashboard in the loop with log_event calls carrying meta.forTask = the delegated item's id:
+   - progress: type 'status', e.g. "Opened the Google Cloud Console, navigating to OAuth consent screen".
+   - BLOCKED/NEEDS INPUT: type 'needs' with meta.need describing what you need (e.g. meta.need = 'login' or 'decision'), e.g. "Need Leon's Google Cloud login to continue". The user will respond (securely, on their side) and you continue.
+   - done: resolve_item (rule 5) plus a final 'status' saying it's finished.
+   This lets the user SEE what you're doing and what you need, live. Never ask for or store a password in memory — only state THAT you need the login; the user provides it to you directly in your own session, never in this shared memory.
+8. NEVER save secrets, passwords, API keys, or tokens.
 Treat this shared memory as the single source of truth across all of the user's assistants.`;
 
 // A server instance is bound to one userId; its tools operate only on that user's memory.
@@ -228,7 +233,7 @@ async function main() {
       // The open board is actionable items only — never log/record entries:
       // 'resolved'/'learned' (feed signals) or 'done' (completion records that an
       // assistant logs so reconciliation can see them, not tasks for the user).
-      if (open) events = events.filter((e) => !['resolved', 'learned', 'done'].includes(e.type));
+      if (open) events = events.filter((e) => !['resolved', 'learned', 'done', 'status', 'needs'].includes(e.type));
       return json(res, 200, { events });
     }
 

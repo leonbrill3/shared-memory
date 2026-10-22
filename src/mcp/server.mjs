@@ -207,6 +207,18 @@ async function main() {
       return json(res, 200, { status: 'created', event: ev });
     }
 
+    // Correct or remove a wrong fact (so bad memory can be fixed, not just added).
+    if (url.startsWith('/api/facts/') && (req.method === 'DELETE' || req.method === 'POST')) {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const id = url.split('/api/facts/')[1].split('?')[0];
+      if (req.method === 'DELETE') {
+        return json(res, 200, { deleted: await deleteFact(uid, id) });
+      }
+      const body = await readBody(req);
+      return json(res, 200, { updated: await updateFact(uid, id, { text: body.text, tags: body.tags }) });
+    }
+
     if (url.startsWith('/api/events') && req.method === 'GET') {
       const uid = await getUserIdByToken(bearer(req) || qToken);
       if (!uid) return json(res, 401, { error: 'invalid token' });

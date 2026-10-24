@@ -214,6 +214,16 @@ async function main() {
       return json(res, 200, { status: 'created', event: ev });
     }
 
+    // Create a durable fact (so Sprock/assistants can record what they learn).
+    if ((url === '/api/facts' || url.startsWith('/api/facts?')) && req.method === 'POST') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const body = await readBody(req);
+      if (!body.text) return json(res, 400, { error: 'text required' });
+      const r = await addFact(uid, { text: String(body.text), tags: body.tags || [], source: body.source || 'sync' });
+      return json(res, 200, { status: r.status || 'created', fact: r.fact || r });
+    }
+
     // Correct or remove a wrong fact (so bad memory can be fixed, not just added).
     if (url.startsWith('/api/facts/') && (req.method === 'DELETE' || req.method === 'POST')) {
       const uid = await getUserIdByToken(bearer(req) || qToken);

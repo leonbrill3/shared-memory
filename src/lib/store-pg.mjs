@@ -208,3 +208,8 @@ export async function resolveEvent(userId, id, { status = 'done', by = null } = 
     [id, userId, status, by]);
   return rows.length ? row2event(rows[0]) : null;
 }
+export async function deleteEvent(userId, id) {
+  await init();
+  const { rowCount } = await pool.query(`DELETE FROM ${EVENTS_T} WHERE id=$1 AND user_id=$2`, [id, userId]);
+  return { status: rowCount ? 'deleted' : 'not_found' };
+}

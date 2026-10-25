@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents, resolveEvent } from '../lib/store.mjs';
+import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents, resolveEvent, deleteEvent } from '../lib/store.mjs';
 import { renderPage } from '../web/page.mjs';
 
 const fmt = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
@@ -233,9 +233,21 @@ async function main() {
       if (!uid) return json(res, 401, { error: 'invalid token' });
       const body = await readBody(req);
       const st = body.status || 'done';
-      const r = await resolveEvent(uid, resolveMatch[1], { status: st, by: 'you' });
-      if (r) await emitEvent(uid, { type: 'resolved', text: `${st === 'dismissed' ? 'Dismissed' : 'Done'}: ${r.text}`, source: 'you', actor: 'you' });
+      // WHO resolved it matters: a user dismissal ('you') suppresses permanently,
+      // but an auto-retirement ('auto:…') must be REVERSIBLE (so a wrong call can
+      // self-heal). We record the actor on both the event and its log.
+      const by = body.by || 'you';
+      const r = await resolveEvent(uid, resolveMatch[1], { status: st, by });
+      if (r) await emitEvent(uid, { type: 'resolved', text: `${st === 'dismissed' ? 'Dismissed' : 'Done'}: ${r.text}`, source: by, actor: by });
       return json(res, r ? 200 : 404, r || { error: 'not found' });
+    }
+
+    // Delete an event outright (for cleanup / un-suppressing a mistaken resolve).
+    const delMatch = url.match(/^\/api\/events\/([^/?]+)$/);
+    if (delMatch && req.method === 'DELETE') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      return json(res, 200, await deleteEvent(uid, delMatch[1]));
     }
 
     // Create a board item (used by connector syncs, e.g. Sprock's Gmail/Calendar sync).
@@ -264,6 +276,11 @@ async function main() {
       const term = new Set(['dismissed', 'done', 'replied', 'merged']);
       const texts = new Set(), threads = new Set(), senders = new Set();
       for (const e of all) {
+        // Auto-retirements (e.g. a standing matter the AI judged done) are NOT
+        // permanent — skip them, so a wrong call self-heals on the next sync.
+        // Only user dismissals / genuine completions suppress forever.
+        const auto = /^auto:/i.test(e.resolvedBy || '') || /^auto:/i.test(e.source || '');
+        if (auto) continue;
         const isTerm = term.has(e.status) || e.type === 'handled' || /^(dismissed|done|replied)\s*:/i.test(e.text || '');
         if (isTerm && e.text) texts.add(e.text);
         if (e.meta?.threadId && (term.has(e.status) || e.type === 'handled')) threads.add(String(e.meta.threadId));

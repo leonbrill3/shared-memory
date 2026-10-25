@@ -93,3 +93,9 @@ export async function resolveEvent(_userId, id, { status = 'done', by = null } =
   fs.writeFileSync(ACT, all.map((x) => JSON.stringify(x)).join('\n') + (all.length ? '\n' : ''));
   return all[i];
 }
+export async function deleteEvent(_userId, id) {
+  const all = readActs(); const n = all.filter((x) => x.id !== id);
+  if (n.length === all.length) return { status: 'not_found' };
+  fs.writeFileSync(ACT, n.map((x) => JSON.stringify(x)).join('\n') + (n.length ? '\n' : ''));
+  return { status: 'deleted' };
+}

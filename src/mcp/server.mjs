@@ -23,7 +23,7 @@ const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory use
 Behave this way automatically, without being asked:
 1. At the START of a conversation or whenever the user asks you to do something, call memory_search with their request to load what is already known about them, their family, their projects, and their preferences — then use it in your answer.
 2. Whenever the user reveals a DURABLE fact about themselves, the people in their life, their projects, decisions, or preferences, call memory_add to save it so the other assistants know it too. When the fact comes out of a specific conversation or document, INCLUDE A LINK TO THAT SOURCE in the fact (e.g. the chat/thread URL, the Google Doc URL) — so another assistant can hand the user back to exactly where the work happened.
-3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. When you surface something NEW that the user may need to act on, call log_event so it appears on their shared board. REMINDERS: when the user asks you to remind them of something (or to remember to do a thing at a time), you MUST call log_event with type 'reminder', text = what to do INCLUDING the time (e.g. "Tell Lisa to bring my pill — today 5:00 PM"), and meta.startTs = the ISO date-time it's due. This is the RELIABLE way a reminder reaches their Sprock dashboard — always do it (even if you also set a device reminder app); the shared board is the channel the dashboard reads.
+3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. When you surface something NEW that the user may need to act on, call log_event so it appears on their shared board. REMINDERS: when the user asks you to remind them of something, to remember to do something, or names a future to-do with a time, you MUST call the dedicated `set_reminder` tool (text + whenISO). Do NOT merely promise to remind them yourself — a promise in this chat never reaches their dashboard; only set_reminder does. Always call it for any reminder request.
 4. When the user says they have handled or no longer care about something, call resolve_item so every assistant stops raising it.
 5. CRITICAL — when YOU take a real action on the user's behalf or complete a task for them (file a form or request, send a message or reply, make a booking, pay a bill, submit an application, schedule something, resolve an issue), you MUST immediately: (a) call log_event with a clear past-tense description of exactly what you did (e.g. "Filed the Aqualectra reimbursement request for Karen Cheis"), and (b) call list_open_items and resolve_item for any open item this action handles — so the other assistants (including the user's dashboard) know it is DONE and stop raising it. Recording what you did is as important as doing it; an action the others can't see leaves them nagging the user about something already finished.
 6. DELEGATED TASKS — when you call list_open_items, watch for any item ADDRESSED TO YOU: its text begins with "→ For <you>" (e.g. "→ For Muse: …") or its details name you as the assignee. Another assistant has handed you that task because you're the one who can do it. Carry it out when you're able (it will include the full context you need), then call resolve_item and log_event describing what you did. If you genuinely cannot do it, call log_event explaining why so it can be re-routed — do not silently ignore it.
@@ -64,6 +64,24 @@ function createServer(userId, emit) {
       meta: z.record(z.any()).optional().describe('Optional structured details, e.g. {startTs:"<ISO due time>"} for a reminder, or {forTask,need} while working a delegated task.'),
     },
   }, async ({ text, type, source, meta }) => fmt(await (emit?.({ type: type || 'event', text, source: source || 'mcp', actor: source || 'mcp', meta: meta || null }) ?? { ok: true })));
+
+  server.registerTool('set_reminder', {
+    title: 'Set a reminder for the user',
+    description: 'Call this WHENEVER the user asks to be reminded of something, to remember to do something, or mentions a future to-do with a time ("remind me to…", "don\'t let me forget…", "tomorrow I need to…"). This puts the reminder on the user\'s Sprock dashboard so it shows up across all their assistants and devices. Always call it for reminder requests — do NOT just promise to remind them yourself, as that stays trapped in this chat. This is the ONLY way a reminder reaches their dashboard.',
+    inputSchema: {
+      text: z.string().describe('What to remind them about, as a short actionable line (e.g. "Laundry and car wash", "Call Cenk — birthday").'),
+      whenISO: z.string().optional().describe('The due date+time in ISO 8601 (e.g. "2026-10-25T09:15:00"). Resolve relative times like "tomorrow 9am" against the current date before calling.'),
+      whenText: z.string().optional().describe('A human-friendly when, e.g. "tomorrow 9:15 AM" — used if whenISO is omitted.'),
+      source: z.string().optional().describe('Which assistant set it (e.g. "muse").'),
+    },
+  }, async ({ text, whenISO, whenText, source }) => {
+    const meta = { kind: 'reminder' };
+    if (whenISO) meta.startTs = whenISO;
+    if (whenText) meta.when = whenText;
+    else if (whenISO) { try { meta.when = new Date(whenISO).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch {} }
+    const line = meta.when ? `${text} — ${meta.when}` : text;
+    return fmt(await (emit?.({ type: 'reminder', text: line, source: source || 'mcp', actor: source || 'mcp', meta }) ?? { ok: true }));
+  });
 
   server.registerTool('list_open_items', {
     title: 'List open board items',

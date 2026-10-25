@@ -253,6 +253,25 @@ async function main() {
       return json(res, 200, { status: 'created', event: ev });
     }
 
+    // DURABLE SUPPRESSION — the full history of what the user dismissed/handled,
+    // so a card they killed can NEVER be re-created, no matter how long ago (the
+    // old recent-100 scan let old dismissals age out → items resurfaced). Returns
+    // raw terminal texts/threads/senders; the caller normalizes & enforces.
+    if (url.startsWith('/api/suppressions') && req.method === 'GET') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const all = await listEvents(uid, { limit: 5000 });
+      const term = new Set(['dismissed', 'done', 'replied', 'merged']);
+      const texts = new Set(), threads = new Set(), senders = new Set();
+      for (const e of all) {
+        const isTerm = term.has(e.status) || e.type === 'handled' || /^(dismissed|done|replied)\s*:/i.test(e.text || '');
+        if (isTerm && e.text) texts.add(e.text);
+        if (e.meta?.threadId && (term.has(e.status) || e.type === 'handled')) threads.add(String(e.meta.threadId));
+        if (e.status === 'dismissed' && e.meta?.fromEmail) senders.add(String(e.meta.fromEmail).toLowerCase());
+      }
+      return json(res, 200, { texts: [...texts], threads: [...threads], senders: [...senders] });
+    }
+
     // Create a durable fact (so Sprock/assistants can record what they learn).
     if ((url === '/api/facts' || url.startsWith('/api/facts?')) && req.method === 'POST') {
       const uid = await getUserIdByToken(bearer(req) || qToken);

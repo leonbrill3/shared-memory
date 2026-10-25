@@ -23,7 +23,13 @@ const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory use
 Behave this way automatically, without being asked:
 1. At the START of a conversation or whenever the user asks you to do something, call memory_search with their request to load what is already known about them, their family, their projects, and their preferences — then use it in your answer.
 2. Whenever the user reveals a DURABLE fact about themselves, the people in their life, their projects, decisions, or preferences, call memory_add to save it so the other assistants know it too. When the fact comes out of a specific conversation or document, INCLUDE A LINK TO THAT SOURCE in the fact (e.g. the chat/thread URL, the Google Doc URL) — so another assistant can hand the user back to exactly where the work happened.
-3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. When you surface something NEW that the user may need to act on, call log_event so it appears on their shared board. REMINDERS: when the user asks you to remind them of something, to remember to do something, or names a future to-do with a time, you MUST call the dedicated set_reminder tool (text + whenISO). Do NOT merely promise to remind them yourself — a promise in this chat never reaches their dashboard; only set_reminder does. Always call it for any reminder request.
+3. BEFORE alerting the user to anything (a deadline, an email, a task, a reminder), call list_open_items. If the matter is already open there, do not create a duplicate; if it has been resolved/dismissed, do NOT raise it again. CRITICAL — REFLECT EVERYTHING TO THE DASHBOARD. Whatever the user asks of you, or tells you, that they'd want to see later, you MUST mirror to their Sprock dashboard with the matching tool — otherwise it stays trapped in this chat and they never see it. Never merely PROMISE ("I'll remind you", "I'll take care of it") without also calling the tool; the promise alone is invisible to them. Match the intent:
+   - "remind me…", "don't let me forget…", a future to-do with a time → call set_reminder (text + whenISO).
+   - "handle this", "take care of…", an errand/to-do/booking they want done → call add_task (text, + whenISO if timed). Add it even if YOU are doing it, so they can watch.
+   - a DURABLE fact they reveal (a person, decision, number, preference) → call memory_add.
+   - something you actually DID or completed for them → call log_event (past tense) AND resolve_item for anything it handles (see rule 5).
+   - something merely worth their attention now → call log_event.
+When unsure which, prefer calling a tool over staying silent — a missed item erodes their trust in the dashboard.
 4. When the user says they have handled or no longer care about something, call resolve_item so every assistant stops raising it.
 5. CRITICAL — when YOU take a real action on the user's behalf or complete a task for them (file a form or request, send a message or reply, make a booking, pay a bill, submit an application, schedule something, resolve an issue), you MUST immediately: (a) call log_event with a clear past-tense description of exactly what you did (e.g. "Filed the Aqualectra reimbursement request for Karen Cheis"), and (b) call list_open_items and resolve_item for any open item this action handles — so the other assistants (including the user's dashboard) know it is DONE and stop raising it. Recording what you did is as important as doing it; an action the others can't see leaves them nagging the user about something already finished.
 6. DELEGATED TASKS — when you call list_open_items, watch for any item ADDRESSED TO YOU: its text begins with "→ For <you>" (e.g. "→ For Muse: …") or its details name you as the assignee. Another assistant has handed you that task because you're the one who can do it. Carry it out when you're able (it will include the full context you need), then call resolve_item and log_event describing what you did. If you genuinely cannot do it, call log_event explaining why so it can be re-routed — do not silently ignore it.
@@ -81,6 +87,21 @@ function createServer(userId, emit) {
     else if (whenISO) { try { meta.when = new Date(whenISO).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch {} }
     const line = meta.when ? `${text} — ${meta.when}` : text;
     return fmt(await (emit?.({ type: 'reminder', text: line, source: source || 'mcp', actor: source || 'mcp', meta }) ?? { ok: true }));
+  });
+
+  server.registerTool('add_task', {
+    title: 'Add a to-do / task to the user\'s dashboard',
+    description: 'Call this WHENEVER the user asks you to do/handle/take care of something for them, or tells you about a to-do, errand, or thing they need to get done (that isn\'t purely a timed reminder). It puts the task on the user\'s Sprock dashboard so they — and their other assistants — can see it\'s in play. If YOU are handling it, still add it so they can watch it; when you finish, call log_event (past tense) + resolve_item. Do NOT just say you\'ll do it — an unlogged task is invisible to their dashboard.',
+    inputSchema: {
+      text: z.string().describe('The task as a short actionable line (e.g. "Book dinner at Carbone Fri 7pm", "Renew the car registration").'),
+      whenISO: z.string().optional().describe('Due/target date+time in ISO 8601, if there is one.'),
+      source: z.string().optional().describe('Which assistant added it (e.g. "muse").'),
+    },
+  }, async ({ text, whenISO, source }) => {
+    const meta = { kind: 'task' };
+    if (whenISO) { meta.startTs = whenISO; try { meta.when = new Date(whenISO).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch {} }
+    const line = meta.when ? `${text} — ${meta.when}` : text;
+    return fmt(await (emit?.({ type: whenISO ? 'deadline' : 'task', text: line, source: source || 'mcp', actor: source || 'mcp', meta }) ?? { ok: true }));
   });
 
   server.registerTool('list_open_items', {

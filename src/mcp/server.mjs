@@ -16,6 +16,11 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { addFact, searchFacts, updateFact, deleteFact, listFacts, stats, getUserIdByToken, createUser, logEvent, listEvents, resolveEvent, deleteEvent } from '../lib/store.mjs';
 import { renderPage } from '../web/page.mjs';
 
+// LAST-RESORT CRASH GUARDS — the shared brain must stay up no matter what. A stray
+// error (bad UUID, a DB hiccup) should be logged, never exit the process.
+process.on('uncaughtException', (e) => console.error('[shared-memory] uncaughtException:', e?.message || e));
+process.on('unhandledRejection', (e) => console.error('[shared-memory] unhandledRejection:', e?.message || e));
+
 const fmt = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 
 const SERVER_INSTRUCTIONS = `This is the user's SHARED MEMORY — one memory used in common by ALL of the user's AI assistants (Muse, Claude, ChatGPT). Keeping it current is how those assistants stay on the same page.
@@ -192,6 +197,7 @@ async function main() {
   }
 
   const httpServer = http.createServer(async (req, res) => {
+   try {
     const url = req.url || '/';
 
     if (url === '/' || url.startsWith('/?')) { res.writeHead(200, { 'content-type': 'text/html' }); return res.end(renderPage()); }
@@ -352,6 +358,12 @@ async function main() {
     }
 
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('not found');
+   } catch (err) {
+    // ONE bad request (e.g. a non-UUID id → Postgres throw) must NEVER take down
+    // the whole shared brain. Log it and return 500 to that caller only.
+    console.error('[shared-memory] request error:', err?.message || err);
+    try { if (!res.headersSent) { res.writeHead(500, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'server error' })); } } catch {}
+   }
   });
   httpServer.listen(PORT, () => console.error(`[shared-memory] http + MCP on :${PORT}`));
 }

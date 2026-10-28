@@ -248,6 +248,28 @@ async function main() {
       return json(res, r ? 200 : 404, r || { error: 'not found' });
     }
 
+    // RESTORE a resolved/dismissed item (undo). Reverses BOTH suppression sources:
+    // (a) reopens the card (status 'open' → no longer terminal), and (b) deletes the
+    // "Dismissed:/Done: <text>" log that would otherwise keep it suppressed. Used by
+    // the app's 20-second Undo so a mis-tapped dismiss is never permanent.
+    const restoreMatch = url.match(/^\/api\/events\/([^/?]+)\/restore/);
+    if (restoreMatch && req.method === 'POST') {
+      const uid = await getUserIdByToken(bearer(req) || qToken);
+      if (!uid) return json(res, 401, { error: 'invalid token' });
+      const ev = await resolveEvent(uid, restoreMatch[1], { status: 'open', by: null });
+      if (ev) {
+        const all = await listEvents(uid, { limit: 500 });
+        const target = String(ev.text || '').trim();
+        for (const e of all) {
+          if (e.type === 'resolved' && /^(dismissed|done|replied)\s*:/i.test(e.text || '')) {
+            const bodyText = e.text.replace(/^(dismissed|done|replied)\s*:\s*/i, '').trim();
+            if (bodyText === target) await deleteEvent(uid, e.id);
+          }
+        }
+      }
+      return json(res, ev ? 200 : 404, ev || { error: 'not found' });
+    }
+
     // Delete an event outright (for cleanup / un-suppressing a mistaken resolve).
     const delMatch = url.match(/^\/api\/events\/([^/?]+)$/);
     if (delMatch && req.method === 'DELETE') {

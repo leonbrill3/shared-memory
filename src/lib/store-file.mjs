@@ -81,9 +81,10 @@ export async function logEvent(_userId, { type = 'event', text, source = null, a
   fs.appendFileSync(ACT, JSON.stringify(e) + '\n');
   return e;
 }
-export async function listEvents(_userId, { limit = 50, status = null } = {}) {
+export async function listEvents(_userId, { limit = 50, status = null, excludeTypes = null } = {}) {
   let all = readActs().reverse();
   if (status) all = all.filter((e) => (e.status || 'open') === status);
+  if (excludeTypes && excludeTypes.length) all = all.filter((e) => !excludeTypes.includes(e.type));
   return all.slice(0, limit);
 }
 export async function resolveEvent(_userId, id, { status = 'done', by = null } = {}) {

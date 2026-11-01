@@ -343,11 +343,12 @@ async function main() {
       const uid = await getUserIdByToken(bearer(req) || qToken);
       if (!uid) return json(res, 401, { error: 'invalid token' });
       const open = /[?&]open=1/.test(url);
-      let events = await listEvents(uid, { limit: 100, status: open ? 'open' : null });
-      // The open board is actionable items only — never log/record entries:
-      // 'resolved'/'learned' (feed signals) or 'done' (completion records that an
-      // assistant logs so reconciliation can see them, not tasks for the user).
-      if (open) events = events.filter((e) => !['resolved', 'learned', 'done', 'status', 'needs'].includes(e.type));
+      const LOG_TYPES = ['resolved', 'learned', 'done', 'status', 'needs'];
+      // Exclude the log/record types IN THE QUERY so LIMIT applies to actionable
+      // items — otherwise recent log entries (also status='open') push genuine open
+      // items (a flight!) past the limit and they silently drop off the board.
+      let events = await listEvents(uid, { limit: open ? 500 : 100, status: open ? 'open' : null, excludeTypes: open ? LOG_TYPES : null });
+      if (open) events = events.filter((e) => !LOG_TYPES.includes(e.type));
       return json(res, 200, { events });
     }
 

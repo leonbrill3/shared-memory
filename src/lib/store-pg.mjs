@@ -191,12 +191,17 @@ export async function logEvent(userId, { type = 'event', text, source = null, ac
   return row2event(r);
 }
 
-export async function listEvents(userId, { limit = 50, status = null } = {}) {
+export async function listEvents(userId, { limit = 50, status = null, excludeTypes = null } = {}) {
   await init();
-  const { rows } = await pool.query(
-    status ? `SELECT * FROM ${EVENTS_T} WHERE user_id=$1 AND status=$2 ORDER BY ts DESC LIMIT $3`
-           : `SELECT * FROM ${EVENTS_T} WHERE user_id=$1 ORDER BY ts DESC LIMIT $2`,
-    status ? [userId, status, limit] : [userId, limit]);
+  // Build dynamically so `limit` applies to the ACTIONABLE rows — otherwise recent
+  // log entries (learned/done/resolved) which are also status='open' crowd out
+  // genuine open items (e.g. a flight) past the LIMIT and they vanish from the board.
+  const params = [userId];
+  let sql = `SELECT * FROM ${EVENTS_T} WHERE user_id=$1`;
+  if (status) { params.push(status); sql += ` AND status=$${params.length}`; }
+  if (excludeTypes && excludeTypes.length) { params.push(excludeTypes); sql += ` AND NOT (type = ANY($${params.length}))`; }
+  params.push(limit); sql += ` ORDER BY ts DESC LIMIT $${params.length}`;
+  const { rows } = await pool.query(sql, params);
   return rows.map(row2event);
 }
 

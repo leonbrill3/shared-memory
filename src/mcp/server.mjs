@@ -285,8 +285,13 @@ async function main() {
       if (!uid) return json(res, 401, { error: 'invalid token' });
       const body = await readBody(req);
       if (!body.text) return json(res, 400, { error: 'text required' });
-      const open = await listEvents(uid, { limit: 200, status: 'open' });
-      if (open.some((e) => (e.text || '').trim() === String(body.text).trim())) {
+      // Dedup against ALL real open board items — exclude log/noise types that would
+      // otherwise bloat the list and push real items past the scan limit (that
+      // truncation let the SAME calendar event / invoice get re-created every sync).
+      const open = await listEvents(uid, { limit: 1000, status: 'open',
+        excludeTypes: ['resolved', 'learned', 'done', 'status', 'needs'] });
+      const incoming = String(body.text).trim().replace(/\s+/g, ' ').toLowerCase();
+      if (open.some((e) => (e.text || '').trim().replace(/\s+/g, ' ').toLowerCase() === incoming)) {
         return json(res, 200, { status: 'duplicate' });
       }
       const ev = await emitEvent(uid, { type: body.type || 'event', text: String(body.text), source: body.source || 'sync', meta: body.meta || null });
